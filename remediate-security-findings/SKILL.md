@@ -1,50 +1,50 @@
 ---
 name: remediate-security-findings
-description: Generate an OpenSpec proposal for remediating security audit findings. Triggered by "remediate security findings". Reads a security-audit.md report (or security-audit.json), maps each finding to concrete tasks, and produces a full change with proposal, design, and tasks ready for /opsx:apply.
+description: "Turn a security-audit report into an OpenSpec remediation change. Reads security-audit.json (or .md) from a change, or findings-report.json from a full-codebase audit run, maps each open Critical/High/Medium finding to concrete tasks, and produces proposal + design + tasks ready for /opsx:apply. Use when the user says 'remediate security findings', 'fix the audit findings', 'make a change for the security report', or after a security-audit run in a project that enabled the suite. Does not modify code itself."
 license: MIT
 metadata:
   author: rdcastor
-  version: "1.0"
+  version: "1.1"
 ---
 
-Generate an OpenSpec change proposal for remediating security audit findings.
+Generate an OpenSpec change that remediates the findings of a security audit.
 
 ## Input
 
 Optionally specify:
-- A path to a `security-audit.md` or `security-audit.json` report.
-- An OpenSpec change name whose audit report to read (looks for `openspec/changes/<name>/security-audit.md`).
-- Nothing — infer the report from conversation context or ask.
+- A path to a `security-audit.json` / `security-audit.md` (per-change audit) or `findings-report.json` / `findings-report.md` (full-codebase run).
+- An OpenSpec change name whose audit report to read (`<changeRoot>/security-audit.json`).
+- Nothing: infer the report from the conversation or ask.
+
+This skill runs in projects that enabled the security-audit suite or when the user asks by name; it never runs on its own.
 
 ## Steps
 
 1. **Locate the audit report**
 
-   Check in order:
-   - Argument passed to the skill (file path or change name).
-   - Conversation context — was a security audit just run? Use that report.
-   - `openspec/changes/*/security-audit.json` — if exactly one exists, use it.
-   - If ambiguous, use the **AskUserQuestion** tool:
-     > "Which security audit report should I remediate? Provide a path or change name."
+   In order:
+   - The argument (file path or change name).
+   - Conversation context: an audit that just ran.
+   - `openspec/changes/*/security-audit.json`: use it if exactly one exists.
+   - `openspec/changes/*/findings/*/findings-report.json`: the newest run that has a report.
+   - Otherwise ask which report to remediate.
 
-   Read both `security-audit.md` (full narrative) and `security-audit.json` (structured findings) when both exist. The JSON `findings` array is the authoritative list; the markdown provides remediation detail.
+   Read the JSON as the authoritative findings list (IDs, severity, confidence, file, line, status) and the markdown for the remediation snippets. Ignore findings whose `status` is `resolved`. Finding IDs are `F1`, `F2`, ... for a per-change audit and `C03-F2` style for a merged full-codebase report; keep them exactly, other people grep for them.
 
 2. **Determine the change name**
 
-   Derive a kebab-case change name from the source:
-   - Source change was `foo-bar` → propose `remediate-foo-bar`.
-   - Generic audit (no source change) → propose `security-remediation`.
-   - If the name already exists as a change directory, append `-v2`, `-v3`, etc.
+   - Source change `foo-bar`: propose `remediate-foo-bar`.
+   - Full-codebase run: `security-remediation-<YYYY-MM-DD>` of the run.
+   - Existing directory: append `-v2`, `-v3`, ...
 
-   Announce: "Creating change: `<name>`"
+   Announce "Creating change: `<name>`" and confirm the project has an OpenSpec root first (`openspec list --json`).
 
 3. **Filter findings by severity**
 
-   Split findings into two buckets:
-   - **In-scope** (default): Critical, High, Medium — these go into the proposal and tasks.
-   - **Noted but deferred**: Low / Info — list them in the proposal's Non-Goals section; do not generate tasks for them unless the caller explicitly asks.
+   - **In scope** (default): Critical, High, Medium.
+   - **Deferred**: Low and Info, listed in the proposal's Non-Goals; no tasks unless the user asks.
 
-   If the report verdict is `SAFE_TO_PROCEED` (no actionable findings), tell the user and exit — no proposal needed.
+   If nothing is in scope (verdict `SAFE_TO_PROCEED`, or only Low/Info left), say so and stop: no change is needed.
 
 4. **Create the change**
 
@@ -52,76 +52,72 @@ Optionally specify:
    openspec new change "<name>"
    ```
 
+   Before writing each artifact, fetch its instructions so the project's `rules` and `context` apply:
+
+   ```bash
+   openspec instructions <artifact-id> --change "<name>" --json
+   ```
+
 5. **Write `proposal.md`**
 
-   Structure:
    ```
-   ## Problem
-   <1–2 sentences: what vulnerability class / attack surface is exposed>
+   ## Why
+   <1–2 sentences: which vulnerability classes / attack surface the audit found exposed; audit path and commit>
 
-   ## Findings Being Addressed
-   | ID | Severity | Title | OWASP / CWE |
-   |----|----------|-------|-------------|
-   | A  | Medium   | ...   | A01:2021 / CWE-284 |
-   ...
+   ## What Changes
+   | ID | Severity | Confidence | Title | OWASP / CWE | Location |
+   |----|----------|------------|-------|-------------|----------|
+   | F1 | High     | High       | ...   | A01:2021 / CWE-284 | src/api.py:84 |
 
-   ## Proposed Solution
-   <For each finding: one paragraph describing the fix strategy.
-    Reference the remediation snippet from the audit report if present.>
+   <For each finding: one paragraph describing the fix strategy, referencing the audit's remediation snippet when there is one.>
 
    ## Non-Goals
-   - Low/Info findings deferred: <list>
+   - Deferred Low/Info findings: <IDs and titles>
    - <anything explicitly out of scope>
 
    ## Phases
-   Phase 1 — Critical/High fixes (if any)
-   Phase 2 — Medium fixes
-   Phase 3 — Tests & verification
+   Phase 1: Critical/High fixes (the minimum needed to lift a BLOCK)
+   Phase 2: Medium fixes
+   Phase 3: Tests, verification, re-audit
    ```
 
 6. **Write `design.md`**
 
-   One "Decision" section per finding with:
-   - The vulnerable pattern (before)
-   - The fixed pattern (after) — copy the remediation snippet from the audit report verbatim
-   - Any trade-offs or caveats
-
-   Keep it concrete: show the actual code change, not a description of it.
+   One "Decision" section per finding: the vulnerable pattern (before), the fixed pattern (after, copied from the audit's remediation snippet verbatim when present), and trade-offs. Show the actual code change, not a description of it. When the audit had no snippet, state what the fix must achieve and note that the implementer derives the patch.
 
 7. **Write `tasks.md`**
 
-   One task per distinct code change required. Group by phase. Each task must be independently completable. Format:
+   One task per distinct code change, grouped by phase, each independently completable and each stating how it is verified:
 
    ```markdown
    ## Phase 1 — Critical / High
 
-   - [ ] 1.1 <file>:<function> — <what to change> [Finding <ID>]
+   - [ ] 1.1 <file>:<function>: <what to change> [F1]; verify: <test name or command>
    - [ ] 1.2 ...
 
    ## Phase 2 — Medium
 
-   - [ ] 2.1 ...
+   - [ ] 2.1 ... [F3]; verify: ...
 
-   ## Phase 3 — Tests & Verification
+   ## Phase 3 — Tests, verification, re-audit
 
-   - [ ] 3.1 Add test: <test name> — verifies finding <ID> is closed
-   - [ ] 3.2 Run `py_compile` on all modified files; full test suite must pass
-   - [ ] 3.3 Commit as `security: remediate <finding IDs>`
+   - [ ] 3.1 Add a regression test per finding that exercises the real failure path (not a mock that hides it): <test names> [IDs]
+   - [ ] 3.2 Run the project's own checks (lint / type-check / test suite as the rules file or CI defines them); all must pass
+   - [ ] 3.3 Re-run `security-audit` in re-audit mode against <audit path>; every addressed finding must show `status: resolved` and the verdict must be SAFE_TO_PROCEED (or the remaining findings must be exactly the deferred ones)
+   - [ ] 3.4 Commit following the repository's convention (e.g. `security: remediate F1, F3`), never bypassing hooks
    ```
-
-   Include a final task: re-run `security-audit` scoped to this change and confirm the original findings are resolved.
 
 8. **Summarise**
 
-   Print:
    ```
    ## Remediation Change Created: <name>
 
+   **Source audit:** <path> (commit <sha>)
    **Findings addressed:** <N> (Critical: X, High: Y, Medium: Z)
    **Deferred (Low/Info):** <M>
 
    ### Findings → Tasks
-   - Finding A (Medium) → tasks 2.1, 3.1
+   - F1 (High) → tasks 1.1, 3.1
    - ...
 
    Ready to implement: /opsx:apply <name>
@@ -129,8 +125,9 @@ Optionally specify:
 
 ## Guardrails
 
-- Copy remediation snippets from the audit report verbatim — do not invent new patches.
-- If the audit report has no remediation snippet for a finding, write the task description in terms of what to achieve, not how, and note that the implementer should derive the patch.
-- Do not implement any code changes — this skill only produces the OpenSpec proposal.
-- If the audit report's verdict is `BLOCK`, prioritise Critical/High findings in Phase 1 and make that phase's tasks the minimum required to unblock archival.
+- Copy remediation snippets from the audit verbatim; do not invent new patches.
+- Do not implement code changes here; this skill only produces the OpenSpec change.
+- Never copy a secret value from the audit or the code into the proposal, design, or tasks.
+- If the audit's verdict is `BLOCK`, Phase 1 is the minimum required to lift the block; say so.
 - Keep tasks atomic: one logical change per task, even if that means more tasks.
+- Respect the project's verification conventions (`CLAUDE.md` / `AGENTS.md` / CI) instead of assuming a language-specific command.

@@ -1,137 +1,86 @@
-# Security Audit Skills
+# Security Audit Suite: how the pieces fit
 
-Two skills form the full-project security audit workflow: `prepare-full-codebase-security-audit` and `security-audit`. This document covers how they fit together, the concurrency model, and how resumability works.
+Four skills. `security-audit` is the engine; the other three set it up, scale it up, and act on its output. This document covers the gate mechanism, the full-project workflow, the concurrency model, resumability, and remediation. It is reference material, not a skill (no `SKILL.md`).
 
----
+## Skills
 
-## Skills in this suite
+| Skill | Role |
+|---|---|
+| `security-audit` | Standalone AppSec review of a path, diff, ref range, or OpenSpec change. Emits a report ending in `**VERDICT: <TOKEN>**` and a `security-audit.json` sidecar (finding IDs, severity, confidence, commit). Per-change gate engine and per-chunk engine for full-project runs. |
+| `enable-security-audit-gate` | Per-project opt-in. Writes the gate into `openspec/config.yaml` as `operations.apply.guidance` / `operations.archive.guidance`; optionally wires `check_verdict.py` as a git or Claude Code hook; migrates projects off the 1.x inline patch. |
+| `prepare-full-codebase-security-audit` | Manual only. Enumerates every source file, partitions into risk-ordered chunks (15 files or fewer), generates an OpenSpec change whose tasks run `security-audit` per chunk and merge the results. Plan only; the audit runs in `/opsx:apply`. |
+| `remediate-security-findings` | Reads a `security-audit.json` or a merged `findings-report.json`, maps open Critical/High/Medium findings to tasks, and generates an OpenSpec change ready for `/opsx:apply`. |
 
-### `security-audit`
-A standalone AppSec review skill. Accepts a file path, directory, git ref range, or explicit file list. Emits a structured report ending in `**VERDICT: SAFE_TO_PROCEED | PROCEED_WITH_FIXES | BLOCK**`. Used directly for per-change gates (every OpenSpec archive triggers it) and as the per-chunk engine inside a full-project audit.
+## The gate
 
-### `prepare-full-codebase-security-audit`
-**Manual invocation only** — never triggered automatically. Enumerates every auditable source file in the project, partitions them into risk-ordered chunks (≤15 files each), and generates a complete OpenSpec change (`proposal.md`, `design.md`, `specs/`, `tasks.md`) whose tasks drive `security-audit` over each chunk. Produces a plan; does not run the audit itself.
+```
+openspec/config.yaml                     openspec instructions apply|archive --json
+  operations:                    ──►        operationGuidance: [ "security-audit gate (apply, ...)", ... ]
+    apply.guidance:   [gate]                        │
+    archive.guidance: [gate]                        ▼
+                                         openspec-apply-change / openspec-archive-change (generated skills)
+                                           "read and consider every entry, follow the applicable ones"
+                                                    │
+                                                    ▼
+                                         Skill(security-audit, args=<change>)  ──►  <changeRoot>/security-audit.md + .json
+                                                    │                                          │
+                                                    ▼                                          ▼
+                                         BLOCK / PROCEED_WITH_FIXES / SAFE        check_verdict.py (optional hard hook)
+```
 
----
+- The entries are project configuration, so `openspec update` never removes them and a project without them has no gate.
+- Guidance is advisory by OpenSpec's design. `check_verdict.py` makes it enforceable where the project wants that: a git pre-commit hook (`--staged`), a Claude Code PreToolUse hook on `openspec archive` (`--from-hook`, exit 2 blocks), and OpenSpec's own `beforeArchive` once lifecycle hooks exist (Fission-AI/OpenSpec#1910 is open at the time of writing).
+- Two policies: `ask` (default; findings are surfaced, the user decides) and `autofix` (remediate inline, re-audit until SAFE, only an explicit override archives on a non-SAFE verdict).
+- OpenSpec's `openspec-verify-change` is spec conformance, not security review; the two are complementary.
 
-## Workflow
+## Full-project workflow
 
 ```
 /prepare-full-codebase-security-audit
         │
         ▼
 openspec/changes/full-codebase-security-audit/
-├── proposal.md
-├── design.md
-├── specs/security-findings-report/spec.md
-└── tasks.md  ← 15 chunk tasks + consolidation
+├── proposal.md · design.md · specs/security-findings-report/spec.md
+└── tasks.md   ← one group per chunk + consolidation
         │
         ▼
 /opsx:apply
-        │
-        ├── Task 1.1: create findings/<timestamp>/
-        ├── Task 2.x: security-audit → findings/<timestamp>/chunk-01.md
-        ├── Task 3.x: security-audit → findings/<timestamp>/chunk-02.md
+        ├── 1.1  create findings/<timestamp>/  (path lives in context only)
+        ├── 2.x  security-audit → findings/<timestamp>/chunk-01.md + chunk-01.json
+        ├── 3.x  security-audit → findings/<timestamp>/chunk-02.md + chunk-02.json
         ├── ...
-        └── Task 17.x: merge → findings/<timestamp>/findings-report.md
+        └── N.x  merge → findings/<timestamp>/findings-report.md + findings-report.json
+                         (IDs prefixed C<NN>-, e.g. C03-F2)
 ```
-
-The prepare skill produces the scaffold. `/opsx:apply` works through the tasks, calling `security-audit` once per chunk and writing each result to the timestamped run folder. The final consolidation task merges all chunk files into a single `findings-report.md`.
-
----
 
 ## Concurrency
 
-**Concurrent `security-audit` invocations are the norm, not the outlier.** The skill gates every OpenSpec change archive, so multiple instances will be running simultaneously across threads at any given time.
+Concurrent `security-audit` invocations are the norm: the gate runs per change while a full-project run may be in flight.
 
-The design accounts for this at every layer:
+| Concern | How it is handled |
+|---|---|
+| Shared output files | Never written. Each run gets its own `findings/<timestamp>/`; each change gets `<changeRoot>/security-audit.*`; ad-hoc reports get `.security-audit/<timestamp>-<slug>.*`. |
+| Run state | Conversation context only; no marker file on disk. |
+| Output path priority | Caller-specified path always wins. Chunk tasks always pass one. |
 
-| Concern | How it's handled |
-|---------|-----------------|
-| Shared output files | Never written. Each run gets its own `findings/<timestamp>/` folder. |
-| Run state tracking | Lives in conversation context only — thread-local by definition. No marker file on disk. |
-| Default fallback paths | `.security-audit.md` and `openspec/changes/<name>/security-audit.md` are only used for standalone, non-chunked invocations with no explicit output path. |
-| Output path priority | Caller-specified path always wins over defaults. Chunked audit tasks always supply an explicit path. |
-
-**Rule for future changes:** any modification to these skills that introduces shared mutable state on disk must be rejected unless it uses a per-run-scoped path (e.g. `findings/<timestamp>/...`).
-
----
-
-## Timestamped run folders
-
-Each full-project audit run writes to its own folder:
-
-```
-openspec/changes/full-codebase-security-audit/findings/
-├── YYYY-MM-DD-HHMMSS/
-│   ├── chunk-01.md      ← API layer & auth
-│   ├── chunk-02.md      ← Business logic & data processing
-│   ├── ...
-│   ├── chunk-15.md      ← test suites (optional)
-│   └── findings-report.md   ← merged, severity-sorted
-└── YYYY-MM-DD-HHMMSS/
-    ├── chunk-01.md
-    └── ...              ← second run, pre-remediation re-audit
-```
-
-The timestamp is generated once in task 1.1 and carried forward in conversation context for the duration of the run. It is never written to a shared file.
-
-Remediation changes reference a specific report by its full path:
-```
-openspec/changes/full-codebase-security-audit/findings/YYYY-MM-DD-HHMMSS/findings-report.md
-```
-
----
+Rule for future changes: anything that introduces shared mutable state on disk is rejected unless it uses a per-run-scoped path.
 
 ## Resumability
 
-If a session is interrupted mid-audit:
-
 1. Resume `/opsx:apply` in a new session.
-2. Task 1.1 scans `findings/` for a subfolder that contains chunk files but **no** `findings-report.md`. That is the incomplete run.
-3. If exactly one incomplete run exists, it continues automatically.
-4. If multiple incomplete runs exist, it asks which to continue before proceeding.
+2. Task 1.1 scans `findings/` for a subfolder with chunk files but no `findings-report.md`: that is the incomplete run. One match continues automatically; several match, the user picks.
+3. Chunk tasks already marked `[x]` are skipped; the run resumes at the first unchecked chunk.
 
-Already-completed chunk tasks (marked `[x]` in `tasks.md`) are skipped. The resumed session picks up from the first unchecked chunk task.
+## Re-audits
 
----
+`security-audit.json` records the commit the audit ran at. A re-audit diffs from that commit, carries unchanged findings forward (`status: carried`), marks fixed ones `resolved`, and continues the ID sequence. That is what keeps repeated gates cheap, and what `check_verdict.py` uses to call an audit stale when HEAD moved past it with code changes.
 
-## Chunk ordering (risk-based)
+## Remediation
 
-Chunks are audited highest-risk first so blockers surface before lower-value passes consume context:
+After any audit with open findings:
 
-| Chunks | Surface area | Risk |
-|--------|-------------|------|
-| 01–02 | API layer, LLM & retrieval pipeline | Critical |
-| 03–04 | Database layer, subprocess/IPC servers | High |
-| 05 | External API integrations | High |
-| 06–09 | Data pipelines, utilities, migrations, shell scripts | Medium |
-| 10–11 | Infrastructure config, frontend | Medium |
-| 12–14 | Training, notebooks, misc | Low |
-| 15 | Test suites | Low (optional) |
+1. `remediate-security-findings` (reads the sidecar or the merged report).
+2. `/opsx:apply <remediation change>`, whose last tasks are regression tests, the project's own checks, and a re-audit that must come back SAFE.
+3. The gate runs again at archive, scoped to the remediation change.
 
----
-
-## Output format
-
-Each `chunk-NN.md` uses the `security-audit` skill's standard report format (Coverage → Executive Summary → Findings → Verdict). The final `findings-report.md` prepends a summary table:
-
-| Chunk | Surface Area | Files | Critical | High | Medium | Low | Info |
-|-------|-------------|-------|----------|------|--------|-----|------|
-| 01 | API layer & auth | 4 | 1 | 2 | 0 | 1 | 0 |
-| ... | | | | | | | |
-
-Findings within each chunk section are sorted Critical → High → Medium → Low → Info.
-
----
-
-## Using findings for remediation
-
-After a full audit completes, the `findings-report.md` is the input spec for all remediation work. The typical flow:
-
-1. Review `findings/<timestamp>/findings-report.md`
-2. Run `/opsx:propose` describing the remediation scope (e.g. "fix all Critical and High findings from the 2026-04-23 audit")
-3. The resulting OpenSpec change's proposal references the findings report by path
-4. Implement via `/opsx:apply` — the `security-audit` gate will run again before archival, scoped to the changed files
-
-Each remediation change should fix a coherent set of findings (e.g. by severity tier or surface area) rather than all findings at once, so the audit gate on archival remains focused.
+Keep each remediation change to a coherent set of findings (a severity tier or a surface area) so the archive gate stays focused.
