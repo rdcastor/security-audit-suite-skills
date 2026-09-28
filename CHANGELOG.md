@@ -1,5 +1,19 @@
 # Changelog
 
+## 2.0.1 (2026-09-28)
+
+From an end-to-end test of 2.0 on a real project (five planted vulnerabilities all caught, docs-only diff SAFE, remediation change validated, gate refused to archive on BLOCK).
+
+### Changed
+- `autofix` gate text: the gate is met by SAFE_TO_PROCEED or by PROCEED_WITH_FIXES whose open findings are all Low/Info, which become tracked work for the next release; only findings above Low need a fix or an explicit, recorded user decision. The old wording demanded SAFE, which a Low-only report can never reach under the verdict rubric, so every Low would have stalled the gate.
+- `gate_config.py` detects entries whose text is from an older suite version (`outdated`) and `--apply` replaces them; `--check` reports the configured policy and asserts one only when `--policy` or the profile's `gate_policy` says which, instead of assuming `ask`.
+- `remediate-security-findings` 1.2: each finding's task carries its own regression test; the last phase holds only cross-cutting checks (project checks, re-audit, commit).
+- `security-audit`: when run as the gate, prefer the change's own files (from its tasks, design and change-referencing commits) over the whole branch diff, and say in Coverage when the fallback to the branch diff may include other stacked changes.
+- Hook snippets pass `--allow-low` so the hard check matches the gate text.
+
+### Upgrade
+- Projects enabled under 2.0.0 with `autofix`: run `gate_config.py --project . --policy autofix --apply` (or the enable skill); it reports `outdated` and replaces the two entries, nothing else moves.
+
 ## 2.0.0 (2026-09-28)
 
 The gate moves into OpenSpec's native per-project configuration. Nothing is patched into generated files any more.

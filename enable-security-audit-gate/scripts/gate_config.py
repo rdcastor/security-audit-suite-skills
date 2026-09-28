@@ -8,9 +8,14 @@ never touches config.yaml, so the gate survives updates and exists only in proje
 
     gate_config.py --project . --policy ask            # dry run: state + what would change
     gate_config.py --project . --policy ask --apply    # write (append/insert; comments preserved)
-    gate_config.py --project . --check                 # exit 0 iff both entries present
+    gate_config.py --project . --check                 # exit 0 iff both entries present and current
     gate_config.py --project . --remove --apply        # take the gate out
     gate_config.py --print --policy autofix            # print the YAML block to paste by hand
+
+States: absent, partial (one operation only), policy-mismatch (entries carry another policy than the
+one asked for), outdated (entries are from an older suite version; --apply replaces them), present.
+Without --policy the policy comes from gate_policy in .security-audit.yaml, else `ask` for --apply
+and "whatever is configured" for --check.
 
 The file is edited textually (comments and ordering survive) and re-parsed with PyYAML
 afterwards; if the entries did not land, the original text is restored. Structures the
@@ -42,11 +47,12 @@ ENTRIES: dict[tuple[str, str], str] = {
     ("apply", "autofix"): (
         "security-audit gate (apply, policy=autofix): when the last task is marked complete and before "
         "suggesting archive, run the security-audit skill scoped to this change (Skill tool: "
-        "skill=security-audit, args=<change-name>). On BLOCK or PROCEED_WITH_FIXES remediate every "
-        "actionable finding inline with a regression test each, then re-run the skill in re-audit "
-        "mode until it returns SAFE_TO_PROCEED; only an explicit user decision may leave a finding "
-        "unfixed, and deferred Low/Info items must be recorded as tracked work. Add the final verdict "
-        "to the completion output as 'Security audit: <verdict>'."
+        "skill=security-audit, args=<change-name>). Fix every open finding above Low inline, each with a "
+        "regression test that fails on the old code, then re-run the skill in re-audit mode until it "
+        "returns SAFE_TO_PROCEED or PROCEED_WITH_FIXES with only Low/Info findings open; record those "
+        "Low/Info findings as tracked work for the next release (the project backlog or TODO) rather than "
+        "pausing. Only an explicit, recorded user decision may leave a finding above Low unfixed. Add the "
+        "final verdict to the completion output as 'Security audit: <verdict>'."
     ),
     ("archive", "ask"): (
         "security-audit gate (archive, policy=ask): before assessing delta specs or moving the change, "
@@ -60,12 +66,12 @@ ENTRIES: dict[tuple[str, str], str] = {
     ("archive", "autofix"): (
         "security-audit gate (archive, policy=autofix): before assessing delta specs or moving the "
         "change, run the security-audit skill scoped to this change (Skill tool: skill=security-audit, "
-        "args=<change-name>), unless a SAFE_TO_PROCEED verdict for this change was produced earlier in "
-        "this conversation and nothing changed since (cite it). On any other verdict remediate the "
-        "actionable findings inline with a regression test each and re-audit until SAFE_TO_PROCEED; "
-        "never archive on a non-SAFE verdict without an explicit user override recorded in the archive "
-        "summary, and record deferred Low/Info items as tracked work. Always add a 'Security audit: "
-        "<verdict>' line to the archive summary."
+        "args=<change-name>), unless a verdict for this change that already meets this gate was produced "
+        "earlier in this conversation and nothing changed since (cite it). The gate is met by "
+        "SAFE_TO_PROCEED, or by PROCEED_WITH_FIXES whose open findings are all Low/Info, recorded as "
+        "tracked work for the next release. Any open finding above Low: fix it inline with a regression "
+        "test and re-audit; archive with it unfixed only on an explicit user decision recorded in the "
+        "archive summary. Always add a 'Security audit: <verdict>' line to the archive summary."
     ),
 }
 
@@ -117,16 +123,18 @@ def entry_policy(entry: str):
 
 
 def state(data: dict) -> dict:
-    """Per-operation: is our entry present, which policy, and is the guidance shape editable."""
+    """Per-operation: is our entry present, which policy, is its text current, is the shape editable."""
     out: dict = {}
     ops = data.get("operations") or {}
     for op in OPS:
         node = ops.get(op) if isinstance(ops, dict) else None
         guidance = node.get("guidance") if isinstance(node, dict) else None
         ours = [g for g in (guidance or []) if isinstance(g, str) and MARKER in g]
+        pol = entry_policy(ours[0]) if ours else None
         out[op] = {
             "present": bool(ours),
-            "policy": entry_policy(ours[0]) if ours else None,
+            "policy": pol,
+            "current": bool(ours) and pol in POLICIES and ours[0] == ENTRIES[(op, pol)] and len(ours) == 1,
             "copies": len(ours),
             "guidance_is_list": guidance is None or isinstance(guidance, list),
             "foreign_entries": len([g for g in (guidance or []) if not (isinstance(g, str) and MARKER in g)]),
@@ -137,12 +145,19 @@ def state(data: dict) -> dict:
 def summarize(st: dict, want) -> str:
     if all(st[o]["present"] for o in OPS):
         pols = {st[o]["policy"] for o in OPS}
-        if want and pols != {want}:
+        if len(pols) != 1 or (want and pols != {want}):
             return "policy-mismatch"
-        return "present" if len(pols) == 1 else "policy-mismatch"
+        if not all(st[o]["current"] for o in OPS):
+            return "outdated"
+        return "present"
     if any(st[o]["present"] for o in OPS):
         return "partial"
     return "absent"
+
+
+def configured_policy(st: dict):
+    pols = {st[o]["policy"] for o in OPS if st[o]["present"]}
+    return pols.pop() if len(pols) == 1 else None
 
 
 # ---------------------------------------------------------------- textual editing
@@ -280,9 +295,9 @@ def prune_empty(yaml, lines, nl: str):
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--project", default=".", help="project root (contains openspec/)")
-    ap.add_argument("--policy", choices=POLICIES, help="gate policy (default: ask, or gate_policy from .security-audit.yaml)")
+    ap.add_argument("--policy", choices=POLICIES, help="gate policy (default: gate_policy from .security-audit.yaml, else ask)")
     ap.add_argument("--apply", action="store_true", help="write the change (default is a dry run)")
-    ap.add_argument("--check", action="store_true", help="exit 0 iff both entries are present (and match --policy if given)")
+    ap.add_argument("--check", action="store_true", help="exit 0 iff both entries are present and current (and match --policy if given)")
     ap.add_argument("--remove", action="store_true", help="remove the gate entries instead of adding them")
     ap.add_argument("--print", dest="print_block", action="store_true", help="print the YAML block and exit")
     ap.add_argument("--json", action="store_true", help="machine-readable state on stdout")
@@ -294,17 +309,17 @@ def main() -> int:
 
     yaml = load_yaml_module()
     project = Path(args.project).resolve()
-    policy = args.policy
-    if policy is None:
+    explicit = args.policy
+    if explicit is None:
         prof = project / ".security-audit.yaml"
         if prof.is_file():
             try:
                 pdata = yaml.safe_load(prof.read_text(encoding="utf-8")) or {}
                 if pdata.get("gate_policy") in POLICIES:
-                    policy = pdata["gate_policy"]
+                    explicit = pdata["gate_policy"]
             except Exception:
                 pass
-        policy = policy or "ask"
+    policy = explicit or "ask"
 
     cfg = find_config(project)
     with cfg.open(encoding="utf-8", newline="") as fh:   # newline="" keeps CRLF visible so it can be preserved
@@ -315,17 +330,24 @@ def main() -> int:
         die(f"UNSAFE: {e}", 2)
     except Exception as e:
         die(f"config.yaml does not parse: {e}", 5)
-    want = None if args.remove else policy
-    summary = summarize(st, want)
-    report = {"config": str(cfg), "state": summary, "policy_wanted": policy, "operations": st}
 
     if args.check:
+        # A check asserts a policy only when one was asked for (flag or profile); otherwise it reports
+        # whatever is configured, so a correctly configured project never fails for want of a flag.
+        want = explicit
+        summary = summarize(st, want)
         ok = summary == "present"
+        report = {"config": str(cfg), "state": summary, "policy": configured_policy(st), "operations": st}
         if args.json:
             print(json.dumps(report, indent=2))
         else:
-            print(f"{summary}: {cfg}" + ("" if ok else "  (run without --check to see what would change)"))
+            hint = "" if ok else "  (run with --apply to fix)"
+            print(f"{summary} (policy={configured_policy(st) or 'none'}): {cfg}{hint}")
         return 0 if ok else 1
+
+    want = None if args.remove else policy
+    summary = summarize(st, want)
+    report = {"config": str(cfg), "state": summary, "policy_wanted": policy, "operations": st}
 
     for op in OPS:
         if not st[op]["guidance_is_list"]:
@@ -341,9 +363,9 @@ def main() -> int:
             expect = "absent"
         else:
             if summary == "present":
-                print(f"present (policy={policy}): {cfg} already carries both entries; nothing to do")
+                print(f"present (policy={policy}): {cfg} already carries both current entries; nothing to do")
                 return 0
-            base = remove_ours(lines) if summary in ("partial", "policy-mismatch") else list(lines)
+            base = remove_ours(lines) if summary in ("partial", "policy-mismatch", "outdated") else list(lines)
             new_lines = insert_entries(base, policy, list(OPS))
             expect = "present"
     except Unsafe as e:
@@ -372,7 +394,7 @@ def main() -> int:
     if verify != expect:
         cfg.write_text(original, encoding="utf-8", newline="")
         die(f"verification after write failed ({verify}); original restored", 1)
-    print(f"{'removed' if args.remove else 'present'} (policy={policy}): wrote {cfg}\n{diff}")
+    print(f"{'removed' if args.remove else 'present'} (policy={policy}): wrote {cfg} (was {summary})\n{diff}")
     return 0
 
 

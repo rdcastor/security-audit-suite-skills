@@ -20,9 +20,9 @@ operations:
       - "security-audit gate (archive, policy=ask): before assessing delta specs or moving the change, run the security-audit skill scoped to this change (Skill tool: skill=security-audit, args=<change-name>), unless a SAFE_TO_PROCEED verdict for this change was produced earlier in this conversation and nothing changed since (cite it). BLOCK: stop; archive only on an explicit user override and record the override and its reason in the archive summary. PROCEED_WITH_FIXES: ask whether to fix now or archive with the findings noted. Always add a 'Security audit: <verdict>' line to the archive summary."
 ```
 
-`policy=autofix` swaps the reaction to a non-SAFE verdict: remediate every actionable finding inline with a regression test each, re-run `security-audit` in re-audit mode until it returns SAFE_TO_PROCEED, never archive on a non-SAFE verdict without an explicit override recorded in the summary, and turn deferred Low/Info items into tracked work. Print the exact text with `gate_config.py --print --policy autofix`.
+`policy=autofix` swaps the reaction to a non-SAFE verdict: fix every open finding above Low inline with a regression test that fails on the old code, re-run `security-audit` in re-audit mode, and treat the gate as met by SAFE_TO_PROCEED or by PROCEED_WITH_FIXES whose open findings are all Low/Info, which are recorded as tracked work for the next release rather than pausing. Only an explicit, recorded user decision leaves a finding above Low unfixed. The distinction matters because the audit's verdict rubric caps a Low-only report at PROCEED_WITH_FIXES: a gate that demanded SAFE would stall on every Low. Print the exact text with `gate_config.py --print --policy autofix`.
 
-The prefix `security-audit gate (` is the marker the script uses to find, replace, and remove its own entries. Keep it if you edit an entry by hand.
+The prefix `security-audit gate (` is the marker the script uses to find, replace, and remove its own entries. Keep it if you edit an entry by hand. When a suite upgrade changes the entry text, `gate_config.py --check` reports `outdated` and `--apply` with the project's policy replaces the entries.
 
 ## Hard check: `scripts/check_verdict.py`
 
@@ -43,11 +43,11 @@ Modes: `--change <name>` (explicit), `--staged` (git pre-commit), `--from-hook` 
 
 ```sh
 #!/bin/sh
-# Refuse to commit an archived change whose security audit is missing or not SAFE.
-python scripts/check_security_verdict.py --staged || exit 1
+# Refuse to commit an archived change whose security audit is missing, stale, or has a finding above Low open.
+python scripts/check_security_verdict.py --staged --allow-low || exit 1
 ```
 
-Copy `check_verdict.py` to `scripts/check_security_verdict.py` (or the project's `.claude/hooks/` when Claude Code is used) so the path stays repo-relative. Use `--allow-fixes` if the project archives on PROCEED_WITH_FIXES after the user's acknowledgement.
+Copy `check_verdict.py` to `scripts/check_security_verdict.py` (or the project's `.claude/hooks/` when Claude Code is used) so the path stays repo-relative. `--allow-low` matches the `autofix` gate text (Lows never hold a release); drop it to require SAFE, or use `--allow-fixes` if the project archives on any PROCEED_WITH_FIXES after the user's acknowledgement.
 
 ### Claude Code PreToolUse hook (project `.claude/settings.json`)
 
@@ -60,7 +60,7 @@ Copy `check_verdict.py` to `scripts/check_security_verdict.py` (or the project's
         "hooks": [
           {
             "type": "command",
-            "command": "python .claude/hooks/check_security_verdict.py --from-hook"
+            "command": "python .claude/hooks/check_security_verdict.py --from-hook --allow-low"
           }
         ]
       }

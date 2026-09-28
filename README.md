@@ -65,7 +65,7 @@ operations:
 Comments and ordering in the file are preserved; running it twice is a no-op; `--remove` takes the entries out. Two policies:
 
 - `ask` (default): findings are surfaced; the user decides whether to fix, defer, or override.
-- `autofix`: actionable findings are remediated inline with regression tests, the change is re-audited until SAFE, and only an explicit recorded override archives on a non-SAFE verdict.
+- `autofix`: every open finding above Low is fixed inline with a regression test and the change is re-audited; the gate is met by SAFE_TO_PROCEED or by PROCEED_WITH_FIXES with only Low/Info findings open, which become tracked work for the next release. Only an explicit, recorded user decision leaves a finding above Low unfixed.
 
 Why this is the right place: `openspec instructions apply|archive --json` returns these entries as `operationGuidance`, and the generated `openspec-apply-change` / `openspec-archive-change` skills read and follow them. `openspec update` regenerates skill files but never touches `config.yaml`, so the gate survives updates. A project without the entries has no gate.
 

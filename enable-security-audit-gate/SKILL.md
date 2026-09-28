@@ -4,7 +4,7 @@ description: "Turn the security-audit suite on for ONE project. Writes the audit
 license: MIT
 metadata:
   author: rdcastor
-  version: "1.0"
+  version: "1.1"
 ---
 
 Enable, reconfigure, or disable the security-audit gate in the current project.
@@ -17,7 +17,7 @@ Guidance is advisory by OpenSpec's design: a prompt-level contract, not an enfor
 
 ## Input
 
-- `--policy ask|autofix`: how the gate reacts to a non-SAFE verdict. `ask` (default) surfaces the findings and asks the user whether to fix now, defer, or override. `autofix` remediates actionable findings inline, re-audits until SAFE_TO_PROCEED, and never archives on a non-SAFE verdict without an explicit, recorded override. If `.security-audit.yaml` sets `gate_policy`, that is the default.
+- `--policy ask|autofix`: how the gate reacts to a non-SAFE verdict. `ask` (default) surfaces the findings and asks the user whether to fix now, defer, or override. `autofix` fixes every open finding above Low inline with a regression test and re-audits; the gate is met by SAFE_TO_PROCEED or by PROCEED_WITH_FIXES whose open findings are all Low/Info, which are recorded as tracked work for the next release instead of pausing ("Lows never hold a release"); only an explicit, recorded user decision leaves a finding above Low unfixed. If `.security-audit.yaml` sets `gate_policy`, that is the default.
 - `--remove`: take the gate out again.
 - `--enforce git|claude-code`: also install the hard verdict check (optional, step 6).
 
@@ -35,7 +35,7 @@ Guidance is advisory by OpenSpec's design: a prompt-level contract, not an enfor
    python "<this skill's folder>/scripts/gate_config.py" --project . --policy ask
    ```
 
-   Without `--apply` the script reports the state of `openspec/config.yaml` (`absent`, `present`, `partial`, or `policy-mismatch`) and prints exactly what it would insert. It preserves comments and ordering: with no `operations:` block it appends one; with one, it adds the two entries under the existing `apply:` / `archive:` guidance lists. If the structure is one it will not touch safely (flow-style lists, anchors, a `guidance` value that is not a list) it exits 2 and prints the entries so you can place them by hand from `references/gate-guidance.md`.
+   Without `--apply` the script reports the state of `openspec/config.yaml` (`absent`, `present`, `partial`, `policy-mismatch`, or `outdated` when the entries are from an older suite version) and prints exactly what it would insert or replace. It preserves comments and ordering: with no `operations:` block it appends one; with one, it adds the two entries under the existing `apply:` / `archive:` guidance lists. If the structure is one it will not touch safely (flow-style lists, anchors, a `guidance` value that is not a list) it exits 2 and prints the entries so you can place them by hand from `references/gate-guidance.md`.
 
 3. **Apply**
 
@@ -47,7 +47,7 @@ Guidance is advisory by OpenSpec's design: a prompt-level contract, not an enfor
 
 4. **Verify through OpenSpec itself**
 
-   If an active change exists (`openspec list --json`), run `openspec instructions archive --change "<name>" --json` and confirm `operationGuidance` carries both entries and that the CLI printed no `Invalid 'operations'` warning. Without an active change, `gate_config.py --project . --check` re-parses the file and exits 0 only when both entries are present.
+   If an active change exists (`openspec list --json`), run `openspec instructions archive --change "<name>" --json` and confirm `operationGuidance` carries both entries and that the CLI printed no `Invalid 'operations'` warning. Without an active change, `gate_config.py --project . --check` re-parses the file and exits 0 only when both entries are present and current; it reports the configured policy and asserts one only when `--policy` (or `gate_policy` in `.security-audit.yaml`) is given.
 
 5. **Migrate a project off the suite 1.x inline patch**
 
@@ -60,7 +60,7 @@ Guidance is advisory by OpenSpec's design: a prompt-level contract, not an enfor
 
    Guidance asks the agent to run the audit; a hook refuses to archive or commit without a SAFE sidecar. `scripts/check_verdict.py` reads `openspec/changes/<name>/security-audit.json` and exits 0 only for `SAFE_TO_PROCEED` (1: BLOCK or PROCEED_WITH_FIXES; 3: no sidecar; 4: stale, HEAD moved past the audited commit with code changes in between; 5: usage error). Copy the script into the project first so the hook path is repo-relative and works on every machine (`.claude/hooks/check_security_verdict.py` for Claude Code, `scripts/check_security_verdict.py` otherwise), then wire it the way the user picked:
 
-   - **git pre-commit** (any harness): `--staged` checks every `openspec/changes/archive/*/security-audit.json` the commit stages, and fails when an archived change has no sidecar. Snippet in `references/gate-guidance.md`.
+   - **git pre-commit** (any harness): `--staged` checks every `openspec/changes/archive/*/security-audit.json` the commit stages, and fails when an archived change has no sidecar. Snippet in `references/gate-guidance.md`. Under the `autofix` policy pass `--allow-low` so a report with only Low/Info findings open passes, matching the gate text.
    - **Claude Code PreToolUse hook** (Claude Code only): `--from-hook` reads the tool call from stdin, acts only when the Bash command runs `openspec archive <name>` or moves `openspec/changes/<name>` into `archive/`, and exits 2 to block with the reason. Write the entry into the project's `.claude/settings.json` (never the user's global settings) and show it before saving. Snippet in `references/gate-guidance.md`.
    - **OpenSpec `beforeArchive`**, once OpenSpec ships lifecycle hooks: the same script, same exit codes.
 
@@ -76,7 +76,7 @@ Guidance is advisory by OpenSpec's design: a prompt-level contract, not an enfor
 
 ## Removing or changing the gate
 
-`--remove` deletes the suite's entries (and any `guidance:`, `apply:`, `archive:` or `operations:` key left empty by that), re-parses, and shows the diff. To switch policy run again with the new `--policy`; the script replaces the old entries in place. Hooks are removed by hand from wherever step 6 put them; that step's report says where.
+`--remove` deletes the suite's entries (and any `guidance:`, `apply:`, `archive:` or `operations:` key left empty by that), re-parses, and shows the diff. To switch policy run again with the new `--policy`; the script replaces the old entries in place. After a suite upgrade that changed the entry text, `--check` reports `outdated` and `--apply` with the project's policy replaces the entries; nothing else in the file moves. Hooks are removed by hand from wherever step 6 put them; that step's report says where.
 
 ## Guardrails
 

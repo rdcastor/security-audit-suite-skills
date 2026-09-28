@@ -200,6 +200,7 @@ In an OpenSpec project the gate is native: `enable-security-audit-gate` puts `op
 
 When invoked as that gate with a change name:
 - Scope is the change's code as in step 1 (working tree included). Read the change's artifacts under `changeRoot` only to understand intent; do not audit the markdown as code.
+- Prefer the change's own files over the whole branch when they can be derived: the files its tasks and design name, plus the files touched by commits whose messages reference the change. Several changes stacked on one branch otherwise report each other's findings. When you fall back to the full branch diff, say so in Coverage and attribute any finding that belongs to another stacked change instead of counting it against this one.
 - Write the report and sidecar to `<changeRoot>/security-audit.md` / `.json` (step 8), so they archive with the change and a hard gate can read the verdict (`enable-security-audit-gate/scripts/check_verdict.py`).
 - Emit the verdict line exactly; the calling workflow decides what to do with BLOCK according to the project's gate policy (`ask` or `autofix`, see `references/project-profile.md`).
 

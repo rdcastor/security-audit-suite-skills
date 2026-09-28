@@ -4,7 +4,7 @@ description: "Turn a security-audit report into an OpenSpec remediation change. 
 license: MIT
 metadata:
   author: rdcastor
-  version: "1.1"
+  version: "1.2"
 ---
 
 Generate an OpenSpec change that remediates the findings of a security audit.
@@ -87,24 +87,23 @@ This skill runs in projects that enabled the security-audit suite or when the us
 
 7. **Write `tasks.md`**
 
-   One task per distinct code change, grouped by phase, each independently completable and each stating how it is verified:
+   One task per finding, grouped by phase, each independently completable. Each finding's task carries its own regression test, so a task is done only when the fix and the test that fails on the old code both exist; the last phase holds only cross-cutting checks. Projects whose task rules say otherwise win.
 
    ```markdown
    ## Phase 1 — Critical / High
 
-   - [ ] 1.1 <file>:<function>: <what to change> [F1]; verify: <test name or command>
+   - [ ] 1.1 <file>:<function>: <what to change>, plus regression test <test name> that exercises the real failure path (not a mock that hides it) and fails on the old code [F1]; verify: <test command>
    - [ ] 1.2 ...
 
    ## Phase 2 — Medium
 
-   - [ ] 2.1 ... [F3]; verify: ...
+   - [ ] 2.1 ... plus regression test <test name> [F3]; verify: ...
 
-   ## Phase 3 — Tests, verification, re-audit
+   ## Phase 3 — Cross-cutting verification
 
-   - [ ] 3.1 Add a regression test per finding that exercises the real failure path (not a mock that hides it): <test names> [IDs]
-   - [ ] 3.2 Run the project's own checks (lint / type-check / test suite as the rules file or CI defines them); all must pass
-   - [ ] 3.3 Re-run `security-audit` in re-audit mode against <audit path>; every addressed finding must show `status: resolved` and the verdict must be SAFE_TO_PROCEED (or the remaining findings must be exactly the deferred ones)
-   - [ ] 3.4 Commit following the repository's convention (e.g. `security: remediate F1, F3`), never bypassing hooks
+   - [ ] 3.1 Run the project's own checks (lint / type-check / full test suite as the rules file or CI defines them); all must pass
+   - [ ] 3.2 Re-run `security-audit` in re-audit mode against <audit path>; every addressed finding must show `status: resolved`, and the verdict must be SAFE_TO_PROCEED or PROCEED_WITH_FIXES with only the deferred Low/Info findings open
+   - [ ] 3.3 Commit following the repository's convention (e.g. `security: remediate F1, F3`), never bypassing hooks
    ```
 
 8. **Summarise**
