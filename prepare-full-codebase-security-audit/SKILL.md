@@ -85,6 +85,8 @@ openspec new change "<name>"
 openspec status --change "<name>" --json
 ```
 
+`openspec new change` is the scaffold command; `openspec change` is the separate read-only group (show, list, validate). The delta spec in 5c goes where the project's `openspec/specs/` layout puts a new capability, flat (`specs/security-findings-report/`) or nested under an existing group, because the archive-time sync matches on that path.
+
 ### 5. Generate artifacts in dependency order
 
 Track progress with a todo list, one item per artifact. Before writing each artifact, fetch its instructions so the project's own `rules` and `context` from `openspec/config.yaml` apply:

@@ -52,6 +52,8 @@ This skill runs in projects that enabled the security-audit suite or when the us
    openspec new change "<name>"
    ```
 
+   `openspec new change` is the scaffold command (`openspec new --help` lists it). `openspec change` is a different, read-only group (show, list, validate), not a synonym; hand-scaffolding is never needed. Delta specs go under `specs/<capability-path>/spec.md`: keep an existing capability's full path, and give a new capability the place the project's `openspec/specs/` layout uses (flat or nested), because the archive-time sync matches on that path.
+
    Before writing each artifact, fetch its instructions so the project's `rules` and `context` apply:
 
    ```bash

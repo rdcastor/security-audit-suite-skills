@@ -1,5 +1,9 @@
 # Changelog
 
+## 2.0.2 (2026-09-28)
+
+Docs only. `prepare-full-codebase-security-audit` and `remediate-security-findings` say explicitly that `openspec new change` is the scaffold command and `openspec change` is the unrelated read-only group (a tester confused the two and hand-scaffolded a change), and that a delta spec's capability path must follow the project's existing `openspec/specs/` layout, flat or nested, or the archive-time sync cannot match it.
+
 ## 2.0.1 (2026-09-28)
 
 From an end-to-end test of 2.0 on a real project (five planted vulnerabilities all caught, docs-only diff SAFE, remediation change validated, gate refused to archive on BLOCK).
